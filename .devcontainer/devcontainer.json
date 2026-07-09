@@ -1,0 +1,15 @@
+{
+  "name": "eddy",
+  "build": { "dockerfile": "Dockerfile" },
+  "workspaceFolder": "/workspaces/eddy",
+  "remoteUser": "root",
+
+  // Prove both toolchains the milestone needs resolve inside the image.
+  "postCreateCommand": "eigenscript --version && go version",
+
+  "customizations": {
+    "vscode": {
+      "settings": { "files.associations": { "*.eigs": "python" } }
+    }
+  }
+}
