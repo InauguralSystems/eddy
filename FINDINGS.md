@@ -62,8 +62,9 @@ does not yield is indivisible, so mutual exclusion is free without a lock.
 Powerful, but a **footgun**: nothing in the language *marks* a region as
 must-not-yield, so an accidental `task_yield` (or a yielding builtin) inside a
 commit would silently break atomicity and only show up as a rare seed-dependent
-anomaly. **Upstream candidate:** a `lib/sync` with a `critical`/`atomic` helper,
-or a debug-mode assertion that a delimited region issued no scheduler yield.
+anomaly. **Filed upstream: InauguralSystems/EigenScript#488** — a `lib/sync` with a
+`critical`/`atomic` helper plus a debug-mode assertion that a delimited region
+issued no scheduler yield.
 This is the concrete, grounded form of the anticipated `lib/sync` gap — surfaced
 by SI, not yet by a blocking lock (append-only writes commute, so milestone 2
 needs no lock manager).
