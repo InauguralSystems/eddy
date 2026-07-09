@@ -14,7 +14,7 @@ jobs:
     name: milestone gate (in devcontainer)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Build the devcontainer (EigenScript pinned by .devcontainer/Dockerfile's
       # EIGS_REF, plus the Go toolchain for the Porcupine oracle) and run the
