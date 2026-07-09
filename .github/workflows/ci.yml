@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: milestone gate (in devcontainer)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Build the devcontainer (EigenScript pinned by .devcontainer/Dockerfile's
+      # EIGS_REF, plus the Go toolchain for the Porcupine oracle) and run the
+      # gate inside it — the same image a Codespace opens. EIGS=eigenscript uses
+      # the on-PATH runtime; GO=go uses the pinned toolchain.
+      - name: Build devcontainer and run the milestone gate
+        uses: devcontainers/ci@v0.3
+        with:
+          runCmd: EIGS=eigenscript GO=go bash test/run.sh
