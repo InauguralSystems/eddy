@@ -5,7 +5,7 @@
   "remoteUser": "root",
 
   // Prove both toolchains the milestone needs resolve inside the image.
-  "postCreateCommand": "eigenscript --version && go version",
+  "postCreateCommand": "eigenscript --version && go version && java -version && test -f \"$ELLE_JAR\"",
 
   "customizations": {
     "vscode": {

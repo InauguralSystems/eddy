@@ -15,8 +15,21 @@ RUN apt-get update \
         build-essential \
         ca-certificates \
         curl \
+        default-jre-headless \
         git \
+        unzip \
  && rm -rf /var/lib/apt/lists/*
+
+# Elle (transactional-isolation oracle) via the elle-cli standalone uberjar —
+# grades the multi-key milestone-2 histories. JRE installed above.
+ARG ELLE_CLI_VERSION=0.1.9
+RUN curl -fsSL "https://github.com/ligurio/elle-cli/releases/download/${ELLE_CLI_VERSION}/elle-cli-bin-${ELLE_CLI_VERSION}.zip" \
+        -o /tmp/elle.zip \
+ && unzip -o /tmp/elle.zip -d /tmp/elle >/dev/null \
+ && mkdir -p /opt \
+ && cp /tmp/elle/target/elle-cli-*-standalone.jar /opt/elle-cli.jar \
+ && rm -rf /tmp/elle /tmp/elle.zip
+ENV ELLE_JAR=/opt/elle-cli.jar
 
 # Go toolchain (for the Porcupine oracle harness). Pinned tarball rather than
 # distro golang so the checker builds against a known-good version.

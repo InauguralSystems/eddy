@@ -20,7 +20,10 @@ jobs:
       # EIGS_REF, plus the Go toolchain for the Porcupine oracle) and run the
       # gate inside it — the same image a Codespace opens. EIGS=eigenscript uses
       # the on-PATH runtime; GO=go uses the pinned toolchain.
-      - name: Build devcontainer and run the milestone gate
+      - name: Build devcontainer and run the milestone gates
         uses: devcontainers/ci@v0.3
         with:
-          runCmd: EIGS=eigenscript GO=go bash test/run.sh
+          runCmd: |
+            set -e
+            EIGS=eigenscript GO=go bash test/run.sh
+            EIGS=eigenscript JAVA=java ELLE_JAR="$ELLE_JAR" bash test/run_txn.sh

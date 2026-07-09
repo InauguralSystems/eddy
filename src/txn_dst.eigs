@@ -1,0 +1,114 @@
+# eddy — milestone 2: multi-key list-append transactions, graded by Elle.
+#
+# Transactions are cooperative tasks over 3 keys whose values are lists. Each
+# txn runs a FIXED script of micro-ops (append / read), yielding between them so
+# intervals overlap; the ONLY variable is the scheduler interleaving
+# (task_sched_seed). Appended values are globally unique so Elle can recover the
+# version order. History is emitted as the Jepsen op-map JSON array elle-cli
+# grades with the list-append model.
+#
+# Two variants:
+#   correct : snapshot isolation. A txn reads the committed-list PREFIX as of its
+#             begin (append-only => the snapshot is just the length at begin) plus
+#             its own buffered appends; commit applies the buffer atomically (no
+#             yield during commit). -> Elle: snapshot-isolation holds.
+#   dirty   : appends apply to the shared store IMMEDIATELY and reads hit the live
+#             whole list, so a reader can observe another txn's INTERMEDIATE state
+#             (some but not all of its appends) -> Elle flags an anomaly (G1b).
+#
+# Usage: eigenscript txn_dst.eigs SEED MODE   (MODE = "correct" | "dirty")
+
+committed is {"1": [], "2": [], "3": []}
+clock is 0
+events is []
+mode is "correct"
+
+define emit_op(proc, typ, ops) as:
+    clock is clock + 1
+    ev is {"type": typ, "f": "txn", "value": ops, "process": proc, "index": clock}
+    events is append of [events, ev]
+    return null
+
+define run_txn(proc, script) as:
+    # begin: snapshot each key's committed length (append-only => a stable prefix)
+    snaplen is {"1": 0, "2": 0, "3": 0}
+    ks is keys of committed
+    ik is 0
+    loop while ik < (len of ks):
+        k is ks[ik]
+        snaplen[k] is len of committed[k]
+        ik is ik + 1
+    localbuf is {"1": [], "2": [], "3": []}
+
+    # invoke event: appends carry their value, reads are null
+    inv_ops is []
+    i is 0
+    n is len of script
+    loop while i < n:
+        mo is script[i]
+        f is mo[0]
+        k is mo[1]
+        if f == "append":
+            inv_ops is append of [inv_ops, [f, k, mo[2]]]
+        else:
+            inv_ops is append of [inv_ops, [f, k, null]]
+        i is i + 1
+    emit_op of [proc, "invoke", inv_ops]
+
+    # execute the micro-ops, yielding between each so intervals overlap
+    ok_ops is []
+    i is 0
+    loop while i < n:
+        mo is script[i]
+        f is mo[0]
+        k is mo[1]
+        ck is str of k
+        if f == "append":
+            v is mo[2]
+            if mode == "dirty":
+                committed[ck] is append of [committed[ck], v]   # BUG: apply now, unbuffered
+            else:
+                localbuf[ck] is append of [localbuf[ck], v]     # SI: buffer to commit
+            ok_ops is append of [ok_ops, [f, k, v]]
+        else:
+            if mode == "dirty":
+                res is committed[ck]                            # BUG: read live whole list
+            else:
+                prefix is committed[ck][0 : snaplen[ck]]        # SI: prefix as of begin
+                res is concat of [prefix, localbuf[ck]]         #     + own writes
+            ok_ops is append of [ok_ops, [f, k, res]]
+        task_yield of null
+        i is i + 1
+
+    # commit: apply the buffer atomically — NO task_yield in this loop, so under
+    # cooperative scheduling the whole commit is one indivisible step.
+    if mode == "correct":
+        ckeys is keys of localbuf
+        ci is 0
+        loop while ci < (len of ckeys):
+            ck is ckeys[ci]
+            committed[ck] is concat of [committed[ck], localbuf[ck]]
+            ci is ci + 1
+    emit_op of [proc, "ok", ok_ops]
+    return null
+
+# ---- driver ------------------------------------------------------------------
+argv is args of null
+seed is num of argv[0]
+mode is argv[1]
+task_sched_seed of seed
+
+# Fixed scripts, globally-unique append values. proc 0 multi-appends to key 1
+# (so it has an intermediate state to catch); proc 1 reads; proc 2 mixes.
+s0 is [["append", 1, 101], ["append", 1, 102], ["append", 2, 103]]
+s1 is [["r", 1, null], ["r", 2, null], ["r", 3, null]]
+s2 is [["append", 3, 301], ["r", 1, null], ["append", 2, 302]]
+
+t0 is task_spawn of [run_txn, 0, s0]
+t1 is task_spawn of [run_txn, 1, s1]
+t2 is task_spawn of [run_txn, 2, s2]
+task_join of t0
+task_join of t1
+task_join of t2
+
+print of (json_encode of events)
