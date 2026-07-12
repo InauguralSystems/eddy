@@ -32,9 +32,10 @@ independent checker built from published theory:
   byte-identical history ⇒ the checker returns the same verdict.
 - The interleaving comes entirely from `task_sched_seed`; client op scripts are
   fixed, so the scheduler is the only variable.
-- Histories record **zero tape `N` records** (the task layer is deterministic by
-  construction), so `EIGS_TRACE`/`EIGS_REPLAY` reproduces any run — including a
-  found violation — byte-for-byte.
+- The only tape `N` record is the **pinned CLI argv** (the declared
+  nondeterminism boundary since EigenScript v0.29.0, #471); the task layer
+  itself contributes none, so `EIGS_TRACE`/`EIGS_REPLAY` reproduces any run —
+  including a found violation — byte-for-byte.
 
 ## Milestone 1 — what it proves
 

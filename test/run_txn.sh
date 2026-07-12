@@ -2,7 +2,7 @@
 # eddy milestone-2 gate: multi-key list-append transactions graded by Elle.
 #   correct store obeys snapshot isolation for every interleaving;
 #   the DST surfaces the dirty-read (intermediate-read) anomaly by sweeping
-#   seeds; the anomaly replays byte-for-byte, zero tape N records.
+#   seeds; the anomaly replays byte-for-byte with only the pinned-argv N record.
 # EIGS=<eigenscript>, JAVA=<java>, ELLE_JAR=<elle-cli standalone jar> override
 # the binaries (CI sets all three inside the devcontainer).
 set -u
@@ -39,17 +39,20 @@ done
 [ -n "$found" ] && ok "DST surfaces the dirty-read anomaly (seed $found -> Elle rejects)" \
                 || no "no seed in 1..6 exposed the dirty-read anomaly"
 
-# 3. the found anomaly reproduces byte-for-byte from its seed, zero tape N
+# 3. the found anomaly reproduces byte-for-byte from its seed; the tape N
 if [ -n "$found" ]; then
   A=$("$EIG" "$DST" "$found" dirty 2>/dev/null)
   B=$("$EIG" "$DST" "$found" dirty 2>/dev/null)
   TAPE="$(mktemp)"; EIGS_TRACE="$TAPE" "$EIG" "$DST" "$found" dirty >/dev/null 2>&1
   R=$(EIGS_REPLAY="$TAPE" "$EIG" "$DST" "$found" dirty 2>/dev/null)
-  N=$(grep -c '^N ' "$TAPE" 2>/dev/null); rm -f "$TAPE"
-  if [ "$A" = "$B" ] && [ "$A" = "$R" ] && [ "$N" -eq 0 ]; then
-    ok "anomaly reproduces byte-for-byte from seed $found (2-run + EIGS_REPLAY identical, $N tape N records)"
+  # One N record — the pinned argv — is the declared boundary since
+  # EigenScript v0.29.0 (#471); see test/run.sh.
+  N=$(grep -c '^N ' "$TAPE" 2>/dev/null)
+  N_ARGS=$(grep -c '^N args=' "$TAPE" 2>/dev/null); rm -f "$TAPE"
+  if [ "$A" = "$B" ] && [ "$A" = "$R" ] && [ "$N" -eq 1 ] && [ "$N_ARGS" -eq 1 ]; then
+    ok "anomaly reproduces byte-for-byte from seed $found (2-run + EIGS_REPLAY identical; only N record is the pinned argv)"
   else
-    no "anomaly not reproducible (2-run/replay diverged or N=$N != 0)"
+    no "anomaly not reproducible (2-run/replay diverged, or N records != {args}: N=$N args=$N_ARGS)"
   fi
 fi
 

@@ -43,11 +43,15 @@ if [ -n "$found" ]; then
   B=$("$EIG" "$DST" "$found" torn 2>/dev/null)
   TAPE="$(mktemp)"; EIGS_TRACE="$TAPE" "$EIG" "$DST" "$found" torn >/dev/null 2>&1
   R=$(EIGS_REPLAY="$TAPE" "$EIG" "$DST" "$found" torn 2>/dev/null)
-  N=$(grep -c '^N ' "$TAPE" 2>/dev/null); rm -f "$TAPE"
-  if [ "$A" = "$B" ] && [ "$A" = "$R" ] && [ "$N" -eq 0 ] && [ "$(printf '%s' "$A" | "$CHK")" = "ILLEGAL" ]; then
-    ok "violation reproduces byte-for-byte from seed $found (2-run + EIGS_REPLAY identical, $N tape N records)"
+  # Since EigenScript v0.29.0 (#471) CLI args ride the tape as a declared
+  # nondeterminism source, so the boundary is exactly ONE N record: the
+  # pinned argv. Anything else on the tape is undeclared nondeterminism.
+  N=$(grep -c '^N ' "$TAPE" 2>/dev/null)
+  N_ARGS=$(grep -c '^N args=' "$TAPE" 2>/dev/null); rm -f "$TAPE"
+  if [ "$A" = "$B" ] && [ "$A" = "$R" ] && [ "$N" -eq 1 ] && [ "$N_ARGS" -eq 1 ] && [ "$(printf '%s' "$A" | "$CHK")" = "ILLEGAL" ]; then
+    ok "violation reproduces byte-for-byte from seed $found (2-run + EIGS_REPLAY identical; only N record is the pinned argv)"
   else
-    no "violation not reproducible (2-run/replay diverged or N=$N != 0)"
+    no "violation not reproducible (2-run/replay diverged, or N records != {args}: N=$N args=$N_ARGS)"
   fi
 fi
 

@@ -13,7 +13,9 @@ programs:
   Porcupine;
 - the planted torn-write bug was **reliably caught** as non-linearizable;
 - every run — including the caught violation — **replayed byte-for-byte** under
-  `EIGS_REPLAY` with **zero tape `N` records**.
+  `EIGS_REPLAY` with **zero tape `N` records** (as of EigenScript v0.29.0/#471
+  the tape also pins CLI argv, so the boundary is exactly one `N args` record;
+  the gates assert that set exactly).
 That is the concurrency-determinism moat validated on an oracle-graded workload:
 a found anomaly is perfectly reproducible from a single integer seed.
 
@@ -45,7 +47,8 @@ and is explicitly rejected. Recorded for the next local dev.
 **Again no EigenScript defect surfaced.** The store correctly implements
 snapshot isolation over 3 list-valued keys — Elle validated it across seeds —
 the planted dirty-read (intermediate-read / G1b) bug was caught, and the anomaly
-replayed byte-for-byte with zero tape `N` records. The Elle bridge works: the
+replayed byte-for-byte with zero task-layer tape `N` records (v0.29.0 adds the
+pinned-argv record, see above). The Elle bridge works: the
 DST emits a Jepsen op-map JSON array that `elle-cli -m list-append` grades
 directly, so the checker swapped Porcupine → Elle **without rewriting the DST**,
 exactly as the format decision intended.
