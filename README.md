@@ -25,6 +25,9 @@ independent checker built from published theory:
   isolation, graded by [Elle](https://github.com/jepsen-io/elle) (Adya-anomaly
   detection) via the [`elle-cli`](https://github.com/ligurio/elle-cli)
   standalone uberjar, over a Jepsen op-map JSON history.
+- **Milestone 3:** **read-write registers** under **serializability** — the
+  workload where snapshot isolation admits write skew — graded by Elle's
+  `rw-register` model with the `serializable` consistency target.
 
 ## The determinism contract
 
@@ -57,6 +60,11 @@ EIGS=eigenscript GO=go bash test/run.sh            # the gate
 eigenscript src/txn_dst.eigs 1 dirty > h.json
 java -jar "$ELLE_JAR" -m list-append -f json h.json   # -> false (anomaly)
 EIGS=eigenscript JAVA=java ELLE_JAR=... bash test/run_txn.sh  # the gate
+
+# milestone 3 — serializable rw-registers, Elle:
+eigenscript src/rw_dst.eigs 1 si > h.json
+java -jar "$ELLE_JAR" -m rw-register -c serializable -f json h.json  # -> false (G2-item write skew)
+EIGS=eigenscript JAVA=java ELLE_JAR=... bash test/run_rw.sh   # the gate
 ```
 
 ## Milestone 2 — what it proves
@@ -73,14 +81,39 @@ globally-unique values so Elle can recover the version order:
   state** — Elle catches it (G1b) — and the anomaly replays byte-for-byte from
   its seed.
 
+## Milestone 3 — what it proves
+
+Read-write registers with overlapping read sets and disjoint write sets — the
+classic **write-skew** shape snapshot isolation cannot reject — plus a blind
+multi-register writer and a repeating reader, as cooperative-task transactions:
+
+- `correct` store implements **Serializable Snapshot Isolation** (Cahill
+  SIGMOD'08 / PostgreSQL SSI, simplified): begin snapshots + buffered writes +
+  first-committer-wins, with commit-time **rw-antidependency** tracking that
+  aborts the pivot of a dangerous structure. Begin-snapshot and the
+  deliberately multi-step commit apply both *yield mid-section*, so their
+  atomicity comes from a **real blocking lock** (`lib/sync`, upstream #488) —
+  not from the milestone-2 "atomic because it never yields" accident
+  (F-EDDY-03); validation runs inside `must_not_yield`. Elle grades it
+  **serializable for every seed**, and the aborts demonstrably fire.
+- `si` store (same machinery, no rw validation — honest snapshot isolation)
+  **admits write skew**: both txns read both contended registers as empty and
+  both commit their writes — Elle rejects it as **G2-item**.
+- `nolock` store (same SSI, lock ablated) shows the F-EDDY-03 footgun for
+  real: a begin-snapshot straddles the yielding commit apply and observes half
+  a transaction's writes — Elle rejects the torn read.
+- Every anomaly replays byte-for-byte from its seed.
+
 ## Layout
 
 | Path | What |
 |------|------|
 | `src/dst.eigs` | M1: single-register store (correct + torn) + cooperative-task DST; emits a Porcupine JSON history |
 | `src/txn_dst.eigs` | M2: multi-key list-append transactions (correct SI + dirty) + DST; emits a Jepsen op-map JSON history |
+| `src/rw_dst.eigs` | M3: serializable rw-registers (SSI + `lib/sync` lock, plain SI, lock-ablated) + DST; Jepsen op-map JSON history |
 | `oracle/check.go` | M1's external Porcupine linearizability oracle (`OK`/`ILLEGAL`) |
 | `test/run.sh` | M1 gate: builds the oracle, sweeps seeds, asserts determinism + replay |
 | `test/run_txn.sh` | M2 gate: grades correct/dirty with Elle (`elle-cli`), asserts the anomaly replays |
+| `test/run_rw.sh` | M3 gate: correct serializable + aborts firing, si write skew (G2-item), nolock snapshot tear, replay |
 | `FINDINGS.md` | The gap ledger — every language/runtime observation, filed upstream not worked around |
 | `.devcontainer/` | Pinned EigenScript (`EIGS_REF`) + Go toolchain; the same image CI runs |

@@ -1,0 +1,330 @@
+# eddy — milestone 3: serializable read-write registers, graded by Elle.
+#
+# The workload where snapshot isolation is NOT enough: transactions READ and
+# WRITE registers with overlapping read sets and disjoint write sets — the
+# classic write-skew shape (two txns each read both of {1,2}, each writes one).
+# SI admits that history; serializability must reject it. Elle grades every
+# history with the rw-register model under the serializable consistency model.
+#
+# Four cooperative-task transactions over 4 registers (initial value null),
+# yielding between micro-ops so intervals overlap; the ONLY variable is the
+# scheduler interleaving (task_sched_seed):
+#   T0: r1 r2 w1        write-skew half A
+#   T1: r1 r2 w2        write-skew half B (reads overlap T0, writes disjoint)
+#   T2: w3 w4           a blind MULTI-register commit — genuinely multi-step apply
+#   T3: (r3 r4) x3      pure reader, THREE sequential txns: its later begins land
+#                       while T2's commit is in flight, so it can observe whether
+#                       that commit was atomic (a process may run many txns, so
+#                       txn state is keyed by a unique txid, not by process)
+#
+# Store variants (MODE):
+#   correct : Serializable Snapshot Isolation (Cahill SIGMOD'08 / PostgreSQL
+#             SSI, simplified): SI reads from a begin snapshot + buffered
+#             writes, first-committer-wins on ww conflicts, and commit-time
+#             rw-antidependency tracking — a txn with both an inbound and an
+#             outbound rw edge to concurrent txns is the pivot of a dangerous
+#             structure and is aborted (an active pivot is doomed in place; a
+#             committed pivot aborts the discovering txn). Begin-snapshot and
+#             commit (validate + apply) are critical sections guarded by a
+#             REAL blocking lock (lib/sync, upstream #488): the commit apply
+#             deliberately task_yields between register writes (modelling a
+#             multi-step durable apply), so atomicity here comes from the
+#             lock, NOT from the F-EDDY-03 "cooperative non-yield" accident.
+#             Validation itself is wrapped in must_not_yield (#488) — if a
+#             suspend ever creeps into it, the run fails loudly.
+#   si      : plain snapshot isolation — same snapshot/buffer/lock machinery,
+#             NO rw-antidependency validation. Admits write-skew: some seed
+#             lets T0 and T1 both read {1,2} = {null,null} and both commit
+#             -> Elle rejects (G2: a pure rw-antidependency cycle).
+#   nolock  : full SSI validation but the lock is a no-op — the F-EDDY-03
+#             footgun made real: T2's yielding commit apply is torn by a
+#             concurrent begin-snapshot, so T3 can observe register 3 without
+#             register 4 -> Elle rejects (a wr/rw cycle with T2).
+#
+# History: the Jepsen op-map JSON array (same format as milestone 2), micro-ops
+# [f, k, v] with f in {"w","r"}; aborted transactions emit type "fail" (their
+# writes definitely did not happen). elle-cli grades it directly:
+#   java -jar elle-cli.jar -m rw-register -c serializable -f json history.json
+#
+# Usage: eigenscript rw_dst.eigs SEED MODE   (MODE = "correct" | "si" | "nolock")
+
+load_file of "lib/sync.eigs"
+
+# ---- shared store state --------------------------------------------------
+# committed : register -> committed value (null = never written)
+# regver    : register -> committed version counter
+# writers   : register -> [[version, txid], ...] committed writes, in order
+# sireads   : register -> [[txid, snapver], ...] snapshot reads (SIREAD locks)
+# txst      : txid -> per-txn state dict (status/flags/snapshot/buffers)
+# gts       : global logical timestamp (begin/commit ordering)
+committed is {"1": null, "2": null, "3": null, "4": null}
+regver is {"1": 0, "2": 0, "3": 0, "4": 0}
+writers is {"1": [], "2": [], "3": [], "4": []}
+sireads is {"1": [], "2": [], "3": [], "4": []}
+txst is {}
+gts is 0
+clock is 0
+events is []
+mode is "correct"
+lk is null
+
+define emit_op(proc, typ, ops) as:
+    clock is clock + 1
+    local ev is {"type": typ, "f": "txn", "value": ops, "process": proc, "index": clock}
+    events is append of [events, ev]
+    return null
+
+# The lock is the store's ONE latch; "nolock" ablates exactly it, nothing else.
+define store_lock() as:
+    if mode != "nolock":
+        lock_acquire of lk
+    return null
+
+define store_unlock() as:
+    if mode != "nolock":
+        lock_release of lk
+    return null
+
+# ---- SSI validation (runs at commit, under the lock, inside must_not_yield) --
+# Sets rw-antidependency flags on this txn and its concurrent partners, then
+# applies the dangerous-structure rule. Conservative in the PostgreSQL way:
+# any later committed version of something I read is an outbound edge; any
+# concurrent snapshot-reader of something I write is an inbound edge.
+# Returns "ok" to commit, "fail" to abort.
+define ssi_validate(txid) as:
+    local st is txst[str of txid]
+    local snapver is st["snapver"]
+    local readk is st["readk"]
+    local wrote is st["wrote"]
+    local ks is null
+    local i is 0
+    local j is 0
+    local k is null
+    local lst is null
+    local ent is null
+    local ost is null
+    local skip is 0
+
+    if st["doomed"] == 1:
+        return "fail"
+
+    # outbound edges (me --rw--> W): W committed a version of k after the one
+    # my snapshot read. ver > snapver means W committed after my begin, so W is
+    # concurrent by construction. If W is a committed pivot, abort me.
+    ks is keys of readk
+    i is 0
+    loop while i < (len of ks):
+        k is ks[i]
+        if readk[k] == 1:
+            lst is writers[k]
+            j is 0
+            loop while j < (len of lst):
+                ent is lst[j]
+                if ent[0] > snapver[k]:
+                    if ent[1] != txid:
+                        ost is txst[str of ent[1]]
+                        st["outc"] is 1
+                        ost["inc"] is 1
+                        if ost["status"] == "committed":
+                            if ost["outc"] == 1:
+                                return "fail"
+                j is j + 1
+        i is i + 1
+
+    # inbound edges (R --rw--> me): R snapshot-read a register I am about to
+    # overwrite, and R is concurrent with me (active, or committed after my
+    # begin). An active pivot is doomed in place; a committed pivot means the
+    # dangerous structure already reached a commit — abort me instead.
+    ks is keys of wrote
+    i is 0
+    loop while i < (len of ks):
+        k is ks[i]
+        if wrote[k] == 1:
+            lst is sireads[k]
+            j is 0
+            loop while j < (len of lst):
+                ent is lst[j]
+                if ent[0] != txid:
+                    ost is txst[str of ent[0]]
+                    skip is 0
+                    if ost["status"] == "aborted":
+                        skip is 1
+                    if ost["status"] == "committed":
+                        if ost["commit"] < st["begin"]:
+                            skip is 1
+                    if skip == 0:
+                        ost["outc"] is 1
+                        st["inc"] is 1
+                        if ost["status"] == "active":
+                            if ost["inc"] == 1:
+                                ost["doomed"] is 1
+                        else:
+                            if ost["inc"] == 1:
+                                return "fail"
+                j is j + 1
+        i is i + 1
+
+    if st["inc"] == 1:
+        if st["outc"] == 1:
+            return "fail"
+    return "ok"
+
+# ---- a transaction: snapshot at begin, buffered writes, validate-then-apply --
+define run_txn(proc, txid, script) as:
+    local ps is str of txid
+    local st is {"status": "active", "inc": 0, "outc": 0, "doomed": 0, "begin": 0, "commit": 0}
+    st["snap"] is {"1": null, "2": null, "3": null, "4": null}
+    st["snapver"] is {"1": 0, "2": 0, "3": 0, "4": 0}
+    st["readk"] is {"1": 0, "2": 0, "3": 0, "4": 0}
+    st["wrote"] is {"1": 0, "2": 0, "3": 0, "4": 0}
+    st["wbuf"] is {"1": null, "2": null, "3": null, "4": null}
+    txst[ps] is st
+
+    # invoke event: writes carry their value, reads are null
+    local inv_ops is []
+    local i is 0
+    local n is len of script
+    local mo is null
+    local f is null
+    local ck is null
+    loop while i < n:
+        mo is script[i]
+        f is mo[0]
+        if f == "w":
+            inv_ops is append of [inv_ops, [f, mo[1], mo[2]]]
+        else:
+            inv_ops is append of [inv_ops, [f, mo[1], null]]
+        i is i + 1
+    emit_op of [proc, "invoke", inv_ops]
+
+    # begin: snapshot every register under the lock. The lock is what keeps a
+    # snapshot from observing another txn's HALF-APPLIED commit (whose apply
+    # loop yields) — remove it ("nolock") and the tear is seed-reachable.
+    store_lock of null
+    gts is gts + 1
+    st["begin"] is gts
+    local snap is st["snap"]
+    local snapver is st["snapver"]
+    local ks is keys of committed
+    local ik is 0
+    local k is null
+    loop while ik < (len of ks):
+        k is ks[ik]
+        snap[k] is committed[k]
+        snapver[k] is regver[k]
+        task_yield of null    # the snapshot read is multi-step too: the lock is
+        ik is ik + 1          # held ACROSS these yields — atomicity is its job
+    store_unlock of null
+
+    # execute micro-ops, yielding between each so txn intervals overlap.
+    # Reads come from the begin snapshot (or my own write buffer); a snapshot
+    # read registers a SIREAD entry for rw-antidependency detection.
+    local readk is st["readk"]
+    local wrote is st["wrote"]
+    local wbuf is st["wbuf"]
+    local ok_ops is []
+    local res is null
+    i is 0
+    loop while i < n:
+        mo is script[i]
+        f is mo[0]
+        ck is str of mo[1]
+        if f == "w":
+            wbuf[ck] is mo[2]
+            wrote[ck] is 1
+            ok_ops is append of [ok_ops, [f, mo[1], mo[2]]]
+        else:
+            if wrote[ck] == 1:
+                res is wbuf[ck]
+            else:
+                res is snap[ck]
+                if readk[ck] == 0:
+                    readk[ck] is 1
+                    sireads[ck] is append of [sireads[ck], [txid, snapver[ck]]]
+            ok_ops is append of [ok_ops, [f, mo[1], res]]
+        task_yield of null
+        i is i + 1
+
+    # commit: one lock-guarded critical section spanning validation AND a
+    # deliberately multi-step apply. Validation must never suspend — wrap it
+    # in must_not_yield (#488) so a yield introduced there fails loudly
+    # instead of corrupting under a rare interleaving.
+    define vbody() as:
+        return ssi_validate of txid
+    local outcome is "ok"
+    store_lock of null
+    if st["doomed"] == 1:
+        outcome is "fail"
+    # first-committer-wins on ww conflicts — SI's own rule, all modes
+    local wks is keys of wrote
+    i is 0
+    loop while i < (len of wks):
+        ck is wks[i]
+        if wrote[ck] == 1:
+            if regver[ck] > snapver[ck]:
+                outcome is "fail"
+        i is i + 1
+    if mode != "si":
+        if outcome == "ok":
+            outcome is must_not_yield of vbody
+    if outcome == "ok":
+        gts is gts + 1
+        st["commit"] is gts
+        i is 0
+        loop while i < (len of wks):
+            ck is wks[i]
+            if wrote[ck] == 1:
+                committed[ck] is wbuf[ck]
+                regver[ck] is regver[ck] + 1
+                writers[ck] is append of [writers[ck], [regver[ck], txid]]
+                task_yield of null    # the apply is multi-step: atomicity is the LOCK's job
+            i is i + 1
+        st["status"] is "committed"
+    else:
+        st["status"] is "aborted"
+    store_unlock of null
+
+    if outcome == "ok":
+        emit_op of [proc, "ok", ok_ops]
+    else:
+        emit_op of [proc, "fail", inv_ops]
+    return null
+
+# ---- a client task: run a fixed list of transactions, sequentially ----------
+# txid = proc*10 + round keeps ids unique and deterministic.
+define run_txns(proc, scripts) as:
+    local r is 0
+    local m is len of scripts
+    loop while r < m:
+        run_txn of [proc, proc * 10 + r, scripts[r]]
+        r is r + 1
+    return null
+
+# ---- driver ------------------------------------------------------------------
+argv is args of null
+seed is num of argv[0]
+mode is argv[1]
+task_sched_seed of seed
+lk is lock_new of null
+
+# Fixed scripts, globally-unique write values (see header for the roles).
+s0 is [["r", 1, null], ["r", 2, null], ["w", 1, 101]]
+s1 is [["r", 1, null], ["r", 2, null], ["w", 2, 201]]
+s2 is [["w", 3, 301], ["w", 4, 401]]
+s3 is [["r", 3, null], ["r", 4, null]]
+
+ss0 is [s0]
+ss1 is [s1]
+ss2 is [s2]
+ss3 is [s3, s3, s3]
+
+t0 is task_spawn of [run_txns, 0, ss0]
+t1 is task_spawn of [run_txns, 1, ss1]
+t2 is task_spawn of [run_txns, 2, ss2]
+t3 is task_spawn of [run_txns, 3, ss3]
+task_join of t0
+task_join of t1
+task_join of t2
+task_join of t3
+
+print of (json_encode of events)

@@ -67,7 +67,9 @@ must-not-yield, so an accidental `task_yield` (or a yielding builtin) inside a
 commit would silently break atomicity and only show up as a rare seed-dependent
 anomaly. **Filed upstream: InauguralSystems/EigenScript#488** — a `lib/sync` with a
 `critical`/`atomic` helper plus a debug-mode assertion that a delimited region
-issued no scheduler yield.
+issued no scheduler yield. *(Resolved: #488 shipped in v0.29.0 as `lib/sync`
+locks + `must_not_yield`; milestone 3 is their first adversarial exercise —
+see F-EDDY-05.)*
 This is the concrete, grounded form of the anticipated `lib/sync` gap — surfaced
 by SI, not yet by a blocking lock (append-only writes commute, so milestone 2
 needs no lock manager).
@@ -80,13 +82,73 @@ G0/G1/G2 via cycle detection), and re-implementing it in EigenScript would be
 self-grading. Lives in the devcontainer/CI; local `test/run_txn.sh` needs
 `JAVA` + `ELLE_JAR`.
 
-## Anticipated (milestone 3 — NOT yet exercised)
+## Milestone 3 (serializable rw-registers, Elle `rw-register -c serializable`)
 
-- **A blocking cooperative lock IS forced by serializable rw-registers.** Once
-  the workload has read-write conflicts (not conflict-free appends), an SSI/2PL
-  store needs real lock acquisition across yield points and transaction aborts —
-  the point where a `lib/sync` blocking primitive (built on mailboxes or a
-  spin-yield flag) becomes unavoidable, connecting to `lib/supervise.eigs`.
-- **Elle consistency-model ladder.** `elle-cli -c` can target read-committed →
-  snapshot-isolation → serializable → strict-serializable; milestone 3 tightens
-  the target and ports PostgreSQL SSI as the reference protocol.
+**Again no EigenScript defect — and the anticipated `lib/sync` gap arrived
+PRE-FILLED.** The blocking-lock forcing predicted below (and by F-EDDY-03) was
+real: the SSI store's begin-snapshot and commit apply are both multi-step
+sections that *yield mid-section*, so serializability genuinely needs mutual
+exclusion across yield points. But upstream had already closed the loop —
+**#488 shipped in v0.29.0** as `lib/sync` (`lock_new` / `lock_acquire` /
+`lock_release` / `with_lock`) plus the `must_not_yield` builtin — so instead of
+hand-rolling a spin-yield mutex and filing the proposal, milestone 3 became the
+primitives' **first adversarial consumer**. Both held (see F-EDDY-05). The
+store is simplified PostgreSQL SSI (Cahill SIGMOD'08): begin snapshots +
+buffered writes + first-committer-wins, commit-time rw-antidependency flags
+(`inc`/`outc` per txn, SIREAD lists per register), abort the pivot of a
+dangerous structure — an active pivot is doomed in place, a committed pivot
+aborts the discovering txn. Elle graded the correct store **serializable at
+every seed swept**, with the validation demonstrably load-bearing (pivot
+aborts fired at 7 of 12 seeds).
+
+### OBS-3 — seed numbers, and what it took to REACH the anomalies
+- `si` (honest snapshot isolation, no rw validation): **write skew caught as
+  G2-item at seeds 1, 2, 3, 6, 9, 10, 11** of 1..12 — both txns read both
+  contended registers as `[null, null]`, each writes one, both commit; a pure
+  rw-antidependency cycle. High hit rate: SI's signature anomaly is easy for
+  the seeded scheduler to reach.
+- `nolock` (same SSI, lock ablated — the F-EDDY-03 footgun made real):
+  **snapshot tear caught at seed 6** (first catch in 1..12): a reader's
+  begin-snapshot straddled the writer's yielding commit apply and observed
+  register 4's new value without register 3's (`r3=null, r4=401`).
+- `correct`: **true at all 12 seeds swept** (gate asserts 1..8), aborts at 7.
+- **The tear was NOT reachable in the first workload shape** — 40 seeds, zero
+  catches. Two structural reasons, both DST-construction lessons: (1) with one
+  txn per task, every begin-snapshot clusters at run start and every commit at
+  run end, so a uniform seeded scheduler never phase-skews them enough to
+  straddle; the fix was a process that runs **multiple sequential txns** (the
+  reader runs three, so its later begins land while the writer's commit is in
+  flight) plus a snapshot loop that yields per register. (2) SSI's
+  conservative committed-pivot rule **masked the planted fault**: while the
+  multi-register writer also had a read, cross-traffic set its `outc`, and the
+  torn reader's own validation then self-aborted before emitting the torn
+  history — the planted-fault variant only became gateable once the writer was
+  blind (no reads). Echoes OBS-1's open question about yield granularity: the
+  seeded scheduler explores well *within* the phase structure the workload
+  gives it, but the workload must be shaped so anomalous phase overlaps exist.
+
+### F-EDDY-05 — `lib/sync` + `must_not_yield` validated under a real adversary
+The predicted `lib/sync` blocking primitive (F-EDDY-03, upstream #488) shipped
+in v0.29.0 and milestone 3 leaned on it for correctness, not decoration: the
+lock is held **across yield points** through a yielding begin-snapshot and a
+yielding multi-step commit apply, under contention from three other tasks, at
+every seed — and the `nolock` ablation proves Elle sees the difference (seed
+6). `must_not_yield` wraps the SSI validation as an executable
+must-not-suspend assertion, exactly the #488 debug-mode use case. Two
+observations, neither a gap: (1) `lock_acquire`'s own test-and-claim is atomic
+*by the cooperative non-yield property* — the F-EDDY-03 footgun is now fenced
+inside one audited, upstream-owned helper instead of being re-rolled in every
+consumer, which is the right resolution; (2) `must_not_yield` takes a
+zero-argument fn, and passing context in used a nested `define` closing over
+the txn's locals — closures cover the ergonomic need cleanly (resolved in
+flight, nothing to file).
+
+## Anticipated (milestone 4+ — NOT yet exercised)
+
+- **Strict serializability / real-time edges.** Milestone 3 grades
+  `-c serializable`; the histories carry `index` order, so tightening to
+  `strict-serializable` (and `-c` ladder experiments per seed) is the next
+  rung.
+- **Mailbox-based coordination.** The lock is a shared-memory flag; a
+  transaction-manager-as-task protocol over `task_send`/`task_recv` would
+  exercise the mailbox surface the proposal named and none of M1–M3 touch.

@@ -27,3 +27,4 @@ jobs:
             set -e
             EIGS=eigenscript GO=go bash test/run.sh
             EIGS=eigenscript JAVA=java ELLE_JAR="$ELLE_JAR" bash test/run_txn.sh
+            EIGS=eigenscript JAVA=java ELLE_JAR="$ELLE_JAR" bash test/run_rw.sh
