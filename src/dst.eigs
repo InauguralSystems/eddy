@@ -1,89 +1,17 @@
-# eddy — milestone 1: a single-register store as a cooperative-task DST.
+# eddy — milestone 1 CLI: a single-register store as a cooperative-task DST.
 #
-# Clients are cooperative tasks (#408) contending on ONE register. Each client
-# runs a FIXED op script, so the ONLY source of variation is the scheduler
-# interleaving, driven by `task_sched_seed`. Every operation is recorded as an
-# invoke/ok pair with a logical timestamp (a global monotonic clock = the
-# real-time order, exact under single-thread cooperative scheduling). The
-# history is emitted as JSON for an EXTERNAL linearizability checker (Porcupine)
-# to grade — the store never grades itself.
+# The machinery lives in src/dst_core.eigs (issue #6 split — the
+# interleaving explorer runs the same core in-process); this file is the
+# unchanged CLI contract:
 #
-# Two store variants:
-#   correct : get/put are atomic (no yield inside) -> always linearizable.
-#   torn    : put does reg:=0; yield; reg:=v -> a concurrent get can observe the
-#             torn 0, a value inconsistent with real-time order -> the checker
-#             flags it. A real "non-atomic write visible to readers" bug class.
+#   Usage: eigenscript src/dst.eigs SEED MODE   (MODE = "correct" | "torn")
 #
-# Usage: eigenscript dst.eigs SEED MODE   (MODE = "correct" | "torn")
+# Emits the JSON history for the EXTERNAL linearizability checker
+# (Porcupine) to grade — the store never grades itself. Output is
+# byte-identical to the pre-split script (gated against the explorer's
+# --dump in test/run_ui.sh).
+load_file of "src/dst_core.eigs"
 
-# ---- the shared register + logical clock -------------------------------------
-reg is 0
-clock is 0
-events is []
-
-define emit(proc, typ, f, val) as:
-    clock is clock + 1
-    ev is {"proc": proc, "type": typ, "f": f, "value": val, "index": clock}
-    events is append of [events, ev]
-    return null
-
-# ---- store variants ----------------------------------------------------------
-mode is "correct"
-
-define do_put(v) as:
-    if mode == "torn":
-        reg is 0                 # BUG: torn write — clears, then yields mid-update
-        task_yield of null
-        reg is v
-    else:
-        reg is v                 # atomic: no yield between read of intent and commit
-    return null
-
-define do_get() as:
-    return reg
-
-# ---- a client task: run a fixed script of ops, yielding mid-op so intervals
-#      overlap (real concurrency in the history) ------------------------------
-define client(id, script) as:
-    n is len of script
-    i is 0
-    loop while i < n:
-        op is script[i]
-        kind is op[0]
-        val is op[1]
-        if kind == "put":
-            emit of [id, "invoke", "put", val]
-            task_yield of null            # op interval stays open across others' events
-            do_put of val
-            emit of [id, "ok", "put", val]
-        else:
-            emit of [id, "invoke", "get", null]
-            task_yield of null
-            r is do_get of null
-            emit of [id, "ok", "get", r]
-        i is i + 1
-    return null
-
-# ---- driver ------------------------------------------------------------------
-# Fixed scripts: 3 clients, distinct put values so the checker can tell writes
-# apart. Interleaving is the only variable (seeded).
 argv is args of null
-seed is num of argv[0]
-mode is argv[1]
-
-task_sched_seed of seed
-
-# client 0 writes the 1x values, client 1 the 2x, client 2 reads
-s0 is [["put", 11], ["get", null], ["put", 12], ["get", null]]
-s1 is [["put", 21], ["get", null], ["put", 22], ["get", null]]
-s2 is [["get", null], ["get", null], ["get", null], ["get", null]]
-
-c0 is task_spawn of [client, 0, s0]
-c1 is task_spawn of [client, 1, s1]
-c2 is task_spawn of [client, 2, s2]
-task_join of c0
-task_join of c1
-task_join of c2
-
-# emit the JSON history array (dogfood the json_encode builtin)
-print of (json_encode of events)
+r is dst_run of [num of argv[0], argv[1], 0]
+print of (json_encode of (r.events))

@@ -1,0 +1,210 @@
+# lint: loaded-by explorer_main.eigs -- module fragment: the entry point loads src/dst_core.eigs then this
+# Interleaving explorer (issue #6) — a run() front-end on the M1 DST,
+# rendered with lib/ui's timeline lane widget (upstream #842, on the
+# v0.37.0 pin): per-client schedule lanes over the logical clock, op
+# intervals as spans, yield sites as markers, the external checker's
+# verdict as a graded marker on its own lane, and an anomaly replay
+# scrubber over the recorded interleaving.
+#
+# The explorer is a PURE READER of the run: explorer_collect drives the
+# exact dst_run the CLI drives (schedule sink on), and the history it
+# holds must byte-match `src/dst.eigs SEED MODE` — the --dump oracle in
+# test/run_ui.sh. Scrubbing re-reads the recorded history (the run is a
+# pure function of the seed, so the records ARE the run); on_scrub fires
+# only on the user's ruler gesture (#842 contract), never from code.
+#
+# The VERDICT comes from the external oracle (Porcupine — Go, so
+# CI/desktop only): pass `--verdict OK|ILLEGAL` (e.g. from
+# `src/dst.eigs S M | oracle/check`). The store never grades itself and
+# neither does the UI.
+#
+# Conventions: LOAD_FILE'd after src/dst_core.eigs; lib/ui.eigs loaded
+# before build_ui/run are CALLED (stubs first when headless); `run` never
+# called at load time; all mutable state in the E dict (#373).
+
+EXP_W is 960
+EXP_H is 500
+
+E is {
+    "root": null,
+    "tl": null,
+    "status_lb": null,
+    "client_lbs": {},
+    "events": [],
+    "sched": [],
+    "procs": [],
+    "t_end": 0,
+    "seed": 0,
+    "mode": "",
+    "verdict": null,
+    "scrub_fires": 0
+}
+
+# ---- collect: run the DST exactly as the CLI does, sink on ----
+define explorer_collect(seed, mode) as:
+    local r is dst_run of [seed, mode, 1]
+    return r
+
+define explorer_load(res, seed, mode, verdict) as:
+    E.events is res.events
+    E.sched is res.sched
+    E.seed is seed
+    E.mode is mode
+    E.verdict is verdict
+    local procs is []
+    local seen is {}
+    for ev in E.events:
+        local pk is f"{ev.proc}"
+        if seen[pk] == null:
+            seen[pk] is 1
+            append of [procs, ev.proc]
+        if ev.index > E.t_end:
+            E.t_end is ev.index
+    E.procs is procs
+    return null
+
+# ---- mapping: history + schedule -> timeline items ----
+# The upstream "Consumer contract 2" shape (tests/test_ui.eigs): spans =
+# who ran when (here: op intervals, invoke.index .. ok.index), markers =
+# yield sites, verdict = a styled kind on the oracle's own lane. Numeric
+# client lane ids and the string "oracle" id coexist by design (#842
+# lanes are addressed by id, both types map without translation).
+define explorer_build_timeline(tl) as:
+    for p in E.procs:
+        timeline_add_lane of [tl, timeline_lane of [p, f"client {p}"]]
+    local open is {}
+    for ev in E.events:
+        local pk is f"{ev.proc}"
+        if ev.type == "invoke":
+            open[pk] is ev
+        else:
+            local inv is open[pk]
+            if inv != null:
+                local sp is timeline_span of [inv.index, ev.index, ev.proc, ev.f]
+                sp.inv is inv
+                sp.ok is ev
+                timeline_add_span of [tl, sp]
+                open[pk] is null
+    for sr in E.sched:
+        local m is timeline_marker of [sr.t, sr.proc, sr.kind]
+        m.sr is sr
+        timeline_add_marker of [tl, m]
+    if E.verdict != null:
+        timeline_add_lane of [tl, timeline_lane of ["oracle", "oracle"]]
+        local vkind is "verdict_reject"
+        if E.verdict == "OK":
+            vkind is "verdict_ok"
+        local vm is timeline_marker of [E.t_end, "oracle", vkind]
+        vm.verdict is E.verdict
+        timeline_add_marker of [tl, vm]
+    timeline_style of [tl, "put", "accent"]
+    timeline_style of [tl, "get", "text_dim"]
+    timeline_style of [tl, "yield", "tl_cursor"]
+    timeline_style of [tl, "torn_yield", "focus_ring"]
+    timeline_style of [tl, "verdict_ok", "accent"]
+    timeline_style of [tl, "verdict_reject", "focus_ring"]
+    return null
+
+# ---- replay state at logical time t, from history records <= t ----
+# {proc -> {done, cur}}: completed op count and the in-flight op label
+# (invoke <= t < ok). The register's history-visible value is the last
+# committed put at or before t; the torn store's intermediate 0 exists
+# only between events, which the history deliberately does not record —
+# the torn_yield markers show where that window sits.
+define explorer_state_at(t) as:
+    local st is {}
+    for p in E.procs:
+        st[f"{p}"] is {"done": 0, "cur": ""}
+    local reg is 0
+    local open is {}
+    for ev in E.events:
+        if ev.index <= t:
+            local pk is f"{ev.proc}"
+            if ev.type == "invoke":
+                open[pk] is ev
+            else:
+                local s is st[pk]
+                s.done is s.done + 1
+                open[pk] is null
+                if ev.f == "put":
+                    reg is ev.value
+    for p in E.procs:
+        local pk2 is f"{p}"
+        local inv is open[pk2]
+        if inv != null:
+            local lbl is f"{inv.f}({inv.value})"
+            if inv.value == null:
+                lbl is f"{inv.f}"
+            local s2 is st[pk2]
+            s2.cur is f" — in {lbl}"
+    return {"st": st, "reg": reg}
+
+# ---- UI ----
+define explorer_scrub_update(t) as:
+    local ft is floor of t
+    local r is explorer_state_at of ft
+    local st is r.st
+    for p in E.procs:
+        local s is st[f"{p}"]
+        local lb is E.client_lbs[f"{p}"]
+        lb.text is f"client {p}: {s.done} ops done{s.cur}"
+    E.status_lb.text is f"t = {ft}   reg(committed) = {r.reg}   drag ruler = scrub | drag body = pan | wheel = zoom | hover = inspect | Esc quits"
+    return null
+
+# lint: allow W002 -- callback signature
+define explorer_on_scrub(w, t) as:
+    E.scrub_fires is E.scrub_fires + 1
+    explorer_scrub_update of t
+    return null
+
+# lint: allow W002 -- callback signature
+define explorer_on_key(ev) as:
+    if ev.key == "escape":
+        return 0
+    return 1
+
+# lint: allow W002 -- callback signature
+define explorer_on_tick(dt) as:
+    local hi is E.tl.hover_item
+    if hi != null:
+        if hi.inv != null:
+            E.status_lb.text is f"client {hi.lane} {hi.kind}: invoke t={hi.t0} -> ok t={hi.t1} value={hi.ok.value}"
+        elif hi.verdict != null:
+            E.status_lb.text is f"oracle verdict: {hi.verdict}"
+        elif hi.sr != null:
+            E.status_lb.text is f"client {hi.sr.proc} {hi.kind} at t={hi.sr.t}"
+    return null
+
+define build_ui(n) as:
+    E.root is panel of ["root", 0, 0, EXP_W, EXP_H]
+    local vtxt is ""
+    if E.verdict != null:
+        vtxt is f"   oracle: {E.verdict}"
+    local title is label of ["title", 12, 8, f"eddy interleaving explorer — seed={E.seed} mode={E.mode}{vtxt}"]
+    add_child of [E.root, title]
+    E.tl is timeline of ["tl", 10, 30, EXP_W - 20, EXP_H - 120]
+    explorer_build_timeline of E.tl
+    # Pad the view one tick past the run: items AT t_end (the verdict
+    # marker, the seeded cursor) sit on the widget's exclusive right
+    # edge and would be clipped invisible in the default view.
+    E.tl.t_max is E.t_end + 1
+    E.tl.on_scrub is explorer_on_scrub
+    add_child of [E.root, E.tl]
+    local y is EXP_H - 82
+    for p in E.procs:
+        local lb is label of [f"c{p}", 12, y, ""]
+        E.client_lbs[f"{p}"] is lb
+        add_child of [E.root, lb]
+        y is y + 16
+    E.status_lb is label of ["status", 12, EXP_H - 24, ""]
+    add_child of [E.root, E.status_lb]
+    timeline_set_cursor of [E.tl, E.t_end]
+    explorer_scrub_update of E.t_end
+    return null
+
+define run(n) as:
+    build_ui of null
+    gfx_open of [EXP_W, EXP_H, "eddy explorer"]
+    app_loop of [E.root, explorer_on_key, explorer_on_tick]
+    gfx_close of null
+    return null

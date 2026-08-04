@@ -152,3 +152,22 @@ flight, nothing to file).
 - **Mailbox-based coordination.** The lock is a shared-memory flag; a
   transaction-manager-as-task protocol over `task_send`/`task_recv` would
   exercise the mailbox surface the proposal named and none of M1–M3 touch.
+
+## Interleaving explorer (issue #6, fleet UI ladder rung 4)
+
+### F-EDDY-06 — GAP: no runtime introspection of scheduler decisions
+The explorer's "who ran when" lanes are DERIVED from app-level records —
+op invoke/ok pairs on the logical clock plus explicit marks at each
+`task_yield` call site (`dst_sched_mark`). That covers this workload
+because eddy owns every yield site, but it is not the scheduler's own
+story: the runtime's seeded ready-queue pick (which task resumed, in what
+order, at which yield) is invisible to `.eigs` code, so true run SEGMENTS
+(resume → yield) cannot be drawn — only op intervals and yield points. A
+consumer that loads third-party task code (or wants to visualize
+`task_sleep`/virtual-time scheduling, as liferaft would) cannot
+instrument every site by hand. Filed upstream as EigenScript#846 — a
+gated `task_sched_trace` (off by default, like the observer/trace flags)
+that records {tick, resumed-task, cause} without perturbing the pick
+sequence. Until then the derived view is honest: the sink is a pure
+reader (gated — `--dump` byte-matches the CLI with the sink on), it just
+sees less than the scheduler knows.
