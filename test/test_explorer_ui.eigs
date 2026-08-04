@@ -1,0 +1,165 @@
+# Explorer UI driven headlessly (issue #6) — the upstream tests/test_ui.eigs
+# pattern: gfx stubbed, lib/ui.eigs loaded for real, real event dicts
+# through dispatch. Runs on the pinned runtime (the timeline widget is on
+# the pin since EigenScript v0.37.0).
+#
+# Bound here:
+#   - the mapping: every invoke/ok pair -> a span carrying both records;
+#     every schedule record -> a marker; the oracle verdict -> its own
+#     lane's graded marker; bounds = the run
+#   - the scrubber seam: ruler press + drag through dispatch fires
+#     on_scrub and re-derives the state panel; programmatic
+#     timeline_set_cursor must NOT fire it (#842 gesture-only contract)
+#   - explorer_state_at: replay state re-read from the history
+
+# ---- gfx stubs (headless) ----
+_ticks is {"v": 0}
+
+define gfx_open(args) as:
+    return 1
+
+define gfx_close(args) as:
+    return null
+
+define gfx_clear(args) as:
+    return null
+
+define gfx_rect(args) as:
+    return null
+
+define gfx_rrect(args) as:
+    return null
+
+define gfx_line(args) as:
+    return null
+
+define gfx_point(args) as:
+    return null
+
+define gfx_circle(args) as:
+    return null
+
+define gfx_text(args) as:
+    return null
+
+define gfx_clip(args) as:
+    return null
+
+define gfx_present(args) as:
+    return null
+
+define gfx_poll(args) as:
+    return null
+
+define gfx_delay(args) as:
+    return null
+
+define gfx_ticks(args) as:
+    _ticks.v is _ticks.v + 1000
+    return _ticks.v
+
+define gfx_text_width(text, scale) as:
+    return (len of text) * 6 * scale
+
+define gfx_text_height(scale) as:
+    return 7 * scale
+
+load_file of "lib/ui.eigs"
+load_file of "src/dst_core.eigs"
+load_file of "explorer.eigs"
+
+failures is 0
+
+define check(label, got, want) as:
+    if got == want:
+        print of (label + " OK")
+    else:
+        print of (label + " FAIL")
+        print of "  got:"
+        print of got
+        print of "  want:"
+        print of want
+        failures is failures + 1
+    return 0
+
+# ---- collect the torn run at a violation-exposing seed (OBS-1: seed 2) ----
+res is explorer_collect of [2, "torn"]
+nev is len of res.events
+nsched is len of res.sched
+check of ["the run produced a history", nev > 0, 1]
+check of ["the sink recorded schedule marks", nsched > 0, 1]
+
+explorer_load of [res, 2, "torn", "ILLEGAL"]
+check of ["three clients found", len of E.procs, 3]
+check of ["t_end is the last event", E.t_end, nev]
+
+build_ui of null
+_layout of [E.root, 0, 0]
+
+# ---- mapping ----
+check of ["client lanes + the oracle lane", len of E.tl.lanes, 4]
+check of ["every invoke/ok pair maps to a span", len of E.tl.spans, 12]
+check of ["schedule marks + the verdict map to markers", len of E.tl.markers, nsched + 1]
+sp0 is E.tl.spans[0]
+check of ["the span carries its invoke record", sp0.inv != null, 1]
+check of ["the span carries its ok record", sp0.ok != null, 1]
+tb is timeline_bounds of E.tl
+check of ["the timeline covers the run plus the end pad", tb.t1, E.t_end + 1]
+vm is E.tl.markers[(len of E.tl.markers) - 1]
+check of ["the verdict marker is graded reject", vm.kind, "verdict_reject"]
+check of ["the verdict marker rides the verdict", vm.verdict, "ILLEGAL"]
+
+# ---- replay state from the history ----
+r0 is explorer_state_at of 0
+sum0 is 0
+for p in E.procs:
+    sum0 is sum0 + r0.st[f"{p}"].done
+check of ["before t=1 nothing has completed", sum0, 0]
+check of ["and the committed register is 0", r0.reg, 0]
+rend is explorer_state_at of E.t_end
+all4 is 1
+for p in E.procs:
+    if rend.st[f"{p}"].done != 4:
+        all4 is 0
+check of ["at t_end every client completed its 4 ops", all4, 1]
+
+# ---- the scrubber: ruler press + drag through dispatch ----
+check of ["programmatic cursor seeding fired no scrub", E.scrub_fires, 0]
+check of ["the cursor starts at t_end", E.tl.cursor, E.t_end]
+
+E.tl._ax is 10
+E.tl._ay is 30
+tv is timeline_view of E.tl
+rx_mid is tv.rx + floor of (tv.rw / 2)
+rx_hi is tv.rx + floor of (tv.rw * 3 / 4)
+dispatch of [E.root, {"type": "mousedown", "button": 1, "x": rx_mid, "y": tv.ry + 2}]
+check of ["a ruler press fires on_scrub", E.scrub_fires, 1]
+cur_mid is E.tl.cursor
+check of ["the press scrubbed into the run", (cur_mid > 0) and (cur_mid < E.t_end), 1]
+dispatch of [E.root, {"type": "mousemove", "x": rx_hi, "y": tv.ry + 2}]
+check of ["dragging the ruler keeps scrubbing", E.scrub_fires, 2]
+check of ["the drag moved the cursor forward", E.tl.cursor > cur_mid, 1]
+dispatch of [E.root, {"type": "mouseup", "button": 1, "x": rx_hi, "y": tv.ry + 2}]
+
+panel_matches is 1
+rc is explorer_state_at of (floor of E.tl.cursor)
+for p in E.procs:
+    s is rc.st[f"{p}"]
+    want is f"client {p}: {s.done} ops done{s.cur}"
+    if E.client_lbs[f"{p}"].text != want:
+        panel_matches is 0
+check of ["the panel equals explorer_state_at at the cursor", panel_matches, 1]
+
+timeline_set_cursor of [E.tl, 3]
+check of ["timeline_set_cursor is silent", E.scrub_fires, 2]
+check of ["but the cursor moved", E.tl.cursor, 3]
+
+# ---- render smoke with the stubs ----
+_render_timeline of [E.tl, 10, 30]
+check of ["the timeline renders headless", 1, 1]
+
+print of "---"
+if failures == 0:
+    print of "explorer ui: all passed"
+else:
+    print of f"explorer ui: {failures} FAILED"

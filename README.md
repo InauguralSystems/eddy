@@ -108,12 +108,15 @@ multi-register writer and a repeating reader, as cooperative-task transactions:
 
 | Path | What |
 |------|------|
-| `src/dst.eigs` | M1: single-register store (correct + torn) + cooperative-task DST; emits a Porcupine JSON history |
+| `src/dst.eigs` | M1 CLI: emits the Porcupine JSON history (machinery in `src/dst_core.eigs`) |
+| `src/dst_core.eigs` | M1 core: single-register store (correct + torn) + cooperative-task DST + the explorer's schedule sink |
+| `explorer.eigs` + `explorer_main.eigs` | interleaving explorer (#6): timeline lanes + anomaly replay scrubber over a seed's schedule |
 | `src/txn_dst.eigs` | M2: multi-key list-append transactions (correct SI + dirty) + DST; emits a Jepsen op-map JSON history |
 | `src/rw_dst.eigs` | M3: serializable rw-registers (SSI + `lib/sync` lock, plain SI, lock-ablated) + DST; Jepsen op-map JSON history |
 | `oracle/check.go` | M1's external Porcupine linearizability oracle (`OK`/`ILLEGAL`) |
 | `test/run.sh` | M1 gate: builds the oracle, sweeps seeds, asserts determinism + replay |
 | `test/run_txn.sh` | M2 gate: grades correct/dirty with Elle (`elle-cli`), asserts the anomaly replays |
 | `test/run_rw.sh` | M3 gate: correct serializable + aborts firing, si write skew (G2-item), nolock snapshot tear, replay |
+| `test/run_ui.sh` | Explorer gate (Go-free): `--dump` byte-matches the CLI (pure-reader + sink purity in one diff), schedule determinism, tape N-records, headless UI dispatch test |
 | `FINDINGS.md` | The gap ledger — every language/runtime observation, filed upstream not worked around |
 | `.devcontainer/` | Pinned EigenScript (`EIGS_REF`) + Go toolchain; the same image CI runs |

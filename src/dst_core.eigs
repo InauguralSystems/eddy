@@ -1,0 +1,100 @@
+# lint: loaded-by ../src/dst.eigs -- module fragment: dst.eigs (CLI) and explorer_main.eigs both load this
+# eddy milestone 1 core — the single-register cooperative-task DST as a
+# loadable module (issue #6): dst.eigs stays the CLI, the interleaving
+# explorer runs the same machinery in-process. The history semantics are
+# UNCHANGED from the pre-split script — the byte-diff oracle in
+# test/run_ui.sh holds dst.eigs and the explorer's --dump to the same
+# output, so the two cannot drift apart.
+#
+# All mutable state lives in the D dict (field writes cross the module
+# boundary; bare rebinds from module functions do not — EigenScript#373).
+#
+# Schedule sink (the explorer's data): when enabled, each task_yield SITE
+# appends {"t", "proc", "kind"} to D.sched before yielding. The sink is a
+# PURE READER of the run — appending to a list performs no task operation
+# and draws nothing from the seeded scheduler, so the interleaving (and
+# therefore the history) is byte-identical with the sink on or off. That
+# purity is gated in CI: the explorer's --dump runs with the sink ON and
+# must byte-match dst.eigs, which runs with it OFF.
+#
+# task_sched_seed is sticky for the process (upstream seeding contract):
+# ONE dst_run per process.
+
+D is {"reg": 0, "clock": 0, "events": [], "mode": "correct", "sched": null}
+
+define dst_emit(proc, typ, f, val) as:
+    D.clock is D.clock + 1
+    local ev is {"proc": proc, "type": typ, "f": f, "value": val, "index": D.clock}
+    append of [D.events, ev]
+    return null
+
+# One schedule record per yield SITE, stamped with the logical clock at
+# the moment the task gives up control. kind: "yield" (the client's
+# between-ops yield) | "torn_yield" (the bug's mid-write yield).
+define dst_sched_mark(proc, kind) as:
+    if D.sched != null:
+        append of [D.sched, {"t": D.clock, "proc": proc, "kind": kind}]
+    return null
+
+# ---- store variants ----------------------------------------------------------
+define do_put(proc, v) as:
+    if D.mode == "torn":
+        D.reg is 0               # BUG: torn write — clears, then yields mid-update
+        dst_sched_mark of [proc, "torn_yield"]
+        task_yield of null
+        D.reg is v
+    else:
+        D.reg is v               # atomic: no yield between read of intent and commit
+    return null
+
+define do_get() as:
+    return D.reg
+
+# ---- a client task: run a fixed script of ops, yielding mid-op so intervals
+#      overlap (real concurrency in the history) ------------------------------
+define client(id, script) as:
+    local n is len of script
+    local i is 0
+    loop while i < n:
+        local op is script[i]
+        local kind is op[0]
+        local val is op[1]
+        if kind == "put":
+            dst_emit of [id, "invoke", "put", val]
+            dst_sched_mark of [id, "yield"]
+            task_yield of null            # op interval stays open across others' events
+            do_put of [id, val]
+            dst_emit of [id, "ok", "put", val]
+        else:
+            dst_emit of [id, "invoke", "get", null]
+            dst_sched_mark of [id, "yield"]
+            task_yield of null
+            local r is do_get of null
+            dst_emit of [id, "ok", "get", r]
+        i is i + 1
+    return null
+
+# ---- driver ------------------------------------------------------------------
+# Fixed scripts: 3 clients, distinct put values so the checker can tell writes
+# apart. Interleaving is the only variable (seeded). Returns {events, sched}
+# (sched null when the sink is off).
+define dst_run(seed, mode, sched_on) as:
+    D.reg is 0
+    D.clock is 0
+    D.events is []
+    D.mode is mode
+    D.sched is null
+    if sched_on:
+        D.sched is []
+    task_sched_seed of seed
+    # client 0 writes the 1x values, client 1 the 2x, client 2 reads
+    local s0 is [["put", 11], ["get", null], ["put", 12], ["get", null]]
+    local s1 is [["put", 21], ["get", null], ["put", 22], ["get", null]]
+    local s2 is [["get", null], ["get", null], ["get", null], ["get", null]]
+    local c0 is task_spawn of [client, 0, s0]
+    local c1 is task_spawn of [client, 1, s1]
+    local c2 is task_spawn of [client, 2, s2]
+    task_join of c0
+    task_join of c1
+    task_join of c2
+    return {"events": D.events, "sched": D.sched}

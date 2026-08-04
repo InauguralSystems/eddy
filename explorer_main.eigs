@@ -1,0 +1,52 @@
+# Entry point for the interleaving explorer (issue #6).
+#
+#   eigenscript explorer_main.eigs SEED MODE [--verdict OK|ILLEGAL]
+#                                            [--dump | --dump-sched]
+#
+# UI mode (default; needs the gfx build): timeline of the seed's
+# interleaving with the anomaly replay scrubber. Pass the external
+# oracle's verdict to render it:
+#   V=$(eigenscript src/dst.eigs 2 torn | oracle/check)
+#   eigenscript explorer_main.eigs 2 torn --verdict "$V"
+#
+# --dump: run explorer_collect (schedule sink ON) and print ONLY the
+# history JSON — must byte-match `src/dst.eigs SEED MODE` (sink OFF).
+# That single diff is both oracles at once: the explorer reads THE run,
+# and the sink is a pure reader that cannot perturb the interleaving.
+# --dump-sched: print the schedule records (one line each) for the
+# determinism gate. Neither dump path touches the ui lib.
+load_file of "src/dst_core.eigs"
+load_file of "explorer.eigs"
+
+argv is args of null
+seed is num of argv[0]
+mode is argv[1]
+verdict is null
+dump is 0
+dump_sched is 0
+i is 2
+loop while i < (len of argv):
+    a is argv[i]
+    if a == "--verdict":
+        verdict is argv[i + 1]
+        i is i + 2
+    elif a == "--dump":
+        dump is 1
+        i is i + 1
+    elif a == "--dump-sched":
+        dump_sched is 1
+        i is i + 1
+    else:
+        i is i + 1
+
+res is explorer_collect of [seed, mode]
+
+if dump:
+    print of (json_encode of (res.events))
+elif dump_sched:
+    for sr in res.sched:
+        print of f"SCHED t={sr.t} proc={sr.proc} kind={sr.kind}"
+else:
+    load_file of "lib/ui.eigs"
+    explorer_load of [res, seed, mode, verdict]
+    run of null
