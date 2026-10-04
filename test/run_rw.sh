@@ -19,6 +19,7 @@ TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT
 PASS=0; FAIL=0
 ok() { echo "  PASS: $1"; PASS=$((PASS+1)); }
 no() { echo "  FAIL: $1"; FAIL=$((FAIL+1)); }
+source "$HERE/test/replay_check.sh" || exit 1
 
 # grade SEED MODE -> "true" | "false" (Elle, rw-register model, serializable
 # consistency target). Leaves the history in $TMP for follow-up assertions.
@@ -63,20 +64,10 @@ done
 [ -n "$torn" ] && ok "DST surfaces the snapshot tear without the lock (seed $torn -> Elle rejects)" \
                || no "no seed in 1..12 exposed the nolock snapshot tear"
 
-# 4. the write-skew anomaly reproduces byte-for-byte from its seed; the tape N
-#    record set is exactly {pinned argv} (EigenScript v0.29.0, #471)
+# 4. Check execution, exact outputs and the pinned-argv population separately.
 if [ -n "$skew" ]; then
-  A=$("$EIG" "$DST" "$skew" si 2>/dev/null)
-  B=$("$EIG" "$DST" "$skew" si 2>/dev/null)
-  TAPE="$(mktemp)"; EIGS_TRACE="$TAPE" "$EIG" "$DST" "$skew" si >/dev/null 2>&1
-  R=$(EIGS_REPLAY="$TAPE" "$EIG" "$DST" "$skew" si 2>/dev/null)
-  N=$(grep -c '^N ' "$TAPE" 2>/dev/null)
-  N_ARGS=$(grep -c '^N args=' "$TAPE" 2>/dev/null); rm -f "$TAPE"
-  if [ "$A" = "$B" ] && [ "$A" = "$R" ] && [ "$N" -eq 1 ] && [ "$N_ARGS" -eq 1 ]; then
-    ok "write skew reproduces byte-for-byte from seed $skew (2-run + EIGS_REPLAY identical; only N record is the pinned argv)"
-  else
-    no "write skew not reproducible (2-run/replay diverged, or N records != {args}: N=$N args=$N_ARGS)"
-  fi
+  check_replay "$skew" si
+  finish_replay
 fi
 
 echo "eddy milestone-3: $PASS passed, $FAIL failed"
