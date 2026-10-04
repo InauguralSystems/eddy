@@ -12,6 +12,7 @@ DST="$HERE/src/dst.eigs"
 PASS=0; FAIL=0
 ok() { echo "  PASS: $1"; PASS=$((PASS+1)); }
 no() { echo "  FAIL: $1"; FAIL=$((FAIL+1)); }
+source "$HERE/test/replay_check.sh" || exit 1
 
 # 0. build the external oracle (independent Go program; the store never self-grades)
 if ! ( cd "$HERE/oracle" && "$GO" build -buildvcs=false -o check . ) 2>&1; then
@@ -36,23 +37,18 @@ done
 [ -n "$found" ] && ok "DST surfaces the torn-write violation (seed $found -> ILLEGAL)" \
                 || no "no seed in 1..12 exposed the torn-write bug"
 
-# 3. the found violation is deterministic + replays byte-for-byte, zero tape N
-#    records — the concurrency-determinism moat on a real, oracle-graded workload
+# 3. Check execution, exact output and the declared argv observation separately.
+# Keep failed runs so a population failure cannot conceal output divergence.
 if [ -n "$found" ]; then
-  A=$("$EIG" "$DST" "$found" torn 2>/dev/null)
-  B=$("$EIG" "$DST" "$found" torn 2>/dev/null)
-  TAPE="$(mktemp)"; EIGS_TRACE="$TAPE" "$EIG" "$DST" "$found" torn >/dev/null 2>&1
-  R=$(EIGS_REPLAY="$TAPE" "$EIG" "$DST" "$found" torn 2>/dev/null)
-  # Since EigenScript v0.29.0 (#471) CLI args ride the tape as a declared
-  # nondeterminism source, so the boundary is exactly ONE N record: the
-  # pinned argv. Anything else on the tape is undeclared nondeterminism.
-  N=$(grep -c '^N ' "$TAPE" 2>/dev/null)
-  N_ARGS=$(grep -c '^N args=' "$TAPE" 2>/dev/null); rm -f "$TAPE"
-  if [ "$A" = "$B" ] && [ "$A" = "$R" ] && [ "$N" -eq 1 ] && [ "$N_ARGS" -eq 1 ] && [ "$(printf '%s' "$A" | "$CHK")" = "ILLEGAL" ]; then
-    ok "violation reproduces byte-for-byte from seed $found (2-run + EIGS_REPLAY identical; only N record is the pinned argv)"
+  check_replay "$found" torn
+  verdict=$("$CHK" <"$REPLAY_EVIDENCE/replay.stdout" 2>"$REPLAY_EVIDENCE/oracle.stderr"); oracle_rc=$?
+  # oracle/check.go documents ILLEGAL as the expected anomaly: text plus rc1.
+  if [ "$oracle_rc" -eq 1 ] && [ "$verdict" = "ILLEGAL" ]; then
+    ok "replayed history retains the externally verified violation"
   else
-    no "violation not reproducible (2-run/replay diverged, or N records != {args}: N=$N args=$N_ARGS)"
+    no "replayed history oracle failed: rc=$oracle_rc verdict=$verdict"
   fi
+  finish_replay
 fi
 
 echo "eddy milestone-1: $PASS passed, $FAIL failed"

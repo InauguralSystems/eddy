@@ -15,6 +15,7 @@ TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT
 PASS=0; FAIL=0
 ok() { echo "  PASS: $1"; PASS=$((PASS+1)); }
 no() { echo "  FAIL: $1"; FAIL=$((FAIL+1)); }
+source "$HERE/test/replay_check.sh" || exit 1
 
 # grade SEED MODE -> "true" | "false" (Elle's list-append verdict)
 grade() {
@@ -39,21 +40,10 @@ done
 [ -n "$found" ] && ok "DST surfaces the dirty-read anomaly (seed $found -> Elle rejects)" \
                 || no "no seed in 1..6 exposed the dirty-read anomaly"
 
-# 3. the found anomaly reproduces byte-for-byte from its seed; the tape N
+# 3. Check execution, exact outputs and the pinned-argv population separately.
 if [ -n "$found" ]; then
-  A=$("$EIG" "$DST" "$found" dirty 2>/dev/null)
-  B=$("$EIG" "$DST" "$found" dirty 2>/dev/null)
-  TAPE="$(mktemp)"; EIGS_TRACE="$TAPE" "$EIG" "$DST" "$found" dirty >/dev/null 2>&1
-  R=$(EIGS_REPLAY="$TAPE" "$EIG" "$DST" "$found" dirty 2>/dev/null)
-  # One N record — the pinned argv — is the declared boundary since
-  # EigenScript v0.29.0 (#471); see test/run.sh.
-  N=$(grep -c '^N ' "$TAPE" 2>/dev/null)
-  N_ARGS=$(grep -c '^N args=' "$TAPE" 2>/dev/null); rm -f "$TAPE"
-  if [ "$A" = "$B" ] && [ "$A" = "$R" ] && [ "$N" -eq 1 ] && [ "$N_ARGS" -eq 1 ]; then
-    ok "anomaly reproduces byte-for-byte from seed $found (2-run + EIGS_REPLAY identical; only N record is the pinned argv)"
-  else
-    no "anomaly not reproducible (2-run/replay diverged, or N records != {args}: N=$N args=$N_ARGS)"
-  fi
+  check_replay "$found" dirty
+  finish_replay
 fi
 
 echo "eddy milestone-2: $PASS passed, $FAIL failed"
