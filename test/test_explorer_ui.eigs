@@ -82,12 +82,21 @@ define check(label, got, want) as:
         failures is failures + 1
     return 0
 
+# A condition (a comparison) checked by truthiness: a comparison is a bool
+# on EigenScript#1637's runtime and 1/0 before it; this prints the same either way.
+define check_true(label, cond) as:
+    if cond:
+        check of [label, 1, 1]
+    else:
+        check of [label, 0, 1]
+    return 0
+
 # ---- collect the torn run at a violation-exposing seed (OBS-1: seed 2) ----
 res is explorer_collect of [2, "torn"]
 nev is len of res.events
 nsched is len of res.sched
-check of ["the run produced a history", nev > 0, 1]
-check of ["the sink recorded schedule marks", nsched > 0, 1]
+check_true of ["the run produced a history", nev > 0]
+check_true of ["the sink recorded schedule marks", nsched > 0]
 
 explorer_load of [res, 2, "torn", "ILLEGAL"]
 check of ["three clients found", len of E.procs, 3]
@@ -101,8 +110,8 @@ check of ["client lanes + the oracle lane", len of E.tl.lanes, 4]
 check of ["every invoke/ok pair maps to a span", len of E.tl.spans, 12]
 check of ["schedule marks + the verdict map to markers", len of E.tl.markers, nsched + 1]
 sp0 is E.tl.spans[0]
-check of ["the span carries its invoke record", sp0.inv != null, 1]
-check of ["the span carries its ok record", sp0.ok != null, 1]
+check_true of ["the span carries its invoke record", sp0.inv != null]
+check_true of ["the span carries its ok record", sp0.ok != null]
 tb is timeline_bounds of E.tl
 check of ["the timeline covers the run plus the end pad", tb.t1, E.t_end + 1]
 vm is E.tl.markers[(len of E.tl.markers) - 1]
@@ -135,10 +144,10 @@ rx_hi is tv.rx + floor of (tv.rw * 3 / 4)
 dispatch of [E.root, {"type": "mousedown", "button": 1, "x": rx_mid, "y": tv.ry + 2}]
 check of ["a ruler press fires on_scrub", E.scrub_fires, 1]
 cur_mid is E.tl.cursor
-check of ["the press scrubbed into the run", (cur_mid > 0) and (cur_mid < E.t_end), 1]
+check_true of ["the press scrubbed into the run", (cur_mid > 0) and (cur_mid < E.t_end)]
 dispatch of [E.root, {"type": "mousemove", "x": rx_hi, "y": tv.ry + 2}]
 check of ["dragging the ruler keeps scrubbing", E.scrub_fires, 2]
-check of ["the drag moved the cursor forward", E.tl.cursor > cur_mid, 1]
+check_true of ["the drag moved the cursor forward", E.tl.cursor > cur_mid]
 dispatch of [E.root, {"type": "mouseup", "button": 1, "x": rx_hi, "y": tv.ry + 2}]
 
 panel_matches is 1
