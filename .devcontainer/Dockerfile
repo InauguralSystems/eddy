@@ -42,7 +42,7 @@ ENV PATH="/usr/local/go/bin:${PATH}"
 
 # Build + install EigenScript at the pinned tag (binary on PATH, stdlib under
 # /usr/local/lib/eigenscript found relative to the binary).
-ARG EIGS_REF=v0.45.0
+ARG EIGS_REF=v0.45.1
 RUN git clone --depth 1 --branch "${EIGS_REF}" \
         https://github.com/InauguralSystems/EigenScript.git /tmp/eigs \
  && make -C /tmp/eigs install PREFIX=/usr/local CC=gcc \
