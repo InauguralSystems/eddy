@@ -34,15 +34,18 @@ else
   no "schedule records diverged across two runs (or empty)"
 fi
 
-# 3. Tape accounting on the explorer path: exactly the one pinned-argv N
-#    record (#471), same boundary the M1 gate asserts for the CLI.
+# 3. Tape accounting on the explorer path: one argv N record (#471) plus
+#    only the two tape v7 module-source kinds, same boundary as the CLI.
 TAPE="$(mktemp)"
 EIGS_TRACE="$TAPE" "$EIG" explorer_main.eigs 2 torn --dump >/dev/null 2>&1
-N=$(grep -c '^N ' "$TAPE" 2>/dev/null); rm -f "$TAPE"
-if [ "${N:-0}" -le 1 ]; then
-  ok "explorer tape N-records=$N (argv only)"
+N=$(grep -c '^N ' "$TAPE" 2>/dev/null)
+N_ARGS=$(grep -Ec '^N ([0-9]+ )?args=' "$TAPE" 2>/dev/null)
+N_SOURCE=$(grep -Ec '^N ([0-9]+ )?load_file_source(_chunk)?=' "$TAPE" 2>/dev/null)
+rm -f "$TAPE"
+if [ "${N_ARGS:-0}" -eq 1 ] && [ "${N:-0}" -eq "$((N_ARGS + N_SOURCE))" ]; then
+  ok "explorer tape N-records=$N (args=$N_ARGS source=$N_SOURCE)"
 else
-  no "explorer tape carries $N N-records (argv-only expected)"
+  no "explorer tape carries N=$N args=$N_ARGS source=$N_SOURCE (args=1 plus module source only expected)"
 fi
 
 # 4. The UI itself, driven headlessly through dispatch (gfx stubbed).
