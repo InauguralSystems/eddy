@@ -2,7 +2,7 @@
 # eddy milestone-2 gate: multi-key list-append transactions graded by Elle.
 #   correct store obeys snapshot isolation for every interleaving;
 #   the DST surfaces the dirty-read (intermediate-read) anomaly by sweeping
-#   seeds; the anomaly replays byte-for-byte with only the pinned-argv N record.
+#   seeds; the anomaly replays byte-for-byte with only argv and module-source N records.
 # EIGS=<eigenscript>, JAVA=<java>, ELLE_JAR=<elle-cli standalone jar> override
 # the binaries (CI sets all three inside the devcontainer).
 set -u

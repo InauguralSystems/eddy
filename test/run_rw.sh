@@ -6,7 +6,7 @@
 #   some seed (Elle names it G2-item); the nolock store (same SSI but the lock
 #   ablated — the F-EDDY-03 non-yield-atomicity footgun) lets a multi-step
 #   commit tear a concurrent snapshot at some seed; the caught anomaly replays
-#   byte-for-byte with only the pinned-argv N record.
+#   byte-for-byte with only argv and module-source N records.
 # EIGS=<eigenscript>, JAVA=<java>, ELLE_JAR=<elle-cli standalone jar> override
 # the binaries (CI sets all three inside the devcontainer).
 set -u
