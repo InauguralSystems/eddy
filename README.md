@@ -20,7 +20,7 @@ independent checker built from published theory:
 
 - **Milestone 1:** single-register linearizability, graded by
   [Porcupine](https://github.com/anishathalye/porcupine) (Wing-Gong check,
-  BSD-3, pure Go) via the ~90-line harness in [`oracle/check.go`](oracle/check.go).
+  MIT, pure Go) via the ~90-line harness in [`oracle/check.go`](oracle/check.go).
 - **Milestone 2:** multi-key **list-append transactions** under snapshot
   isolation, graded by [Elle](https://github.com/jepsen-io/elle) (Adya-anomaly
   detection) via the [`elle-cli`](https://github.com/ligurio/elle-cli)
