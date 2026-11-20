@@ -141,14 +141,14 @@ E.tl._ay is 30
 tv is timeline_view of E.tl
 rx_mid is tv.rx + floor of (tv.rw / 2)
 rx_hi is tv.rx + floor of (tv.rw * 3 / 4)
-dispatch of [E.root, {"type": "mousedown", "button": 1, "x": rx_mid, "y": tv.ry + 2}]
+ui_dispatch of [E.root, {"type": "mousedown", "button": 1, "x": rx_mid, "y": tv.ry + 2}]
 check of ["a ruler press fires on_scrub", E.scrub_fires, 1]
 cur_mid is E.tl.cursor
 check_true of ["the press scrubbed into the run", (cur_mid > 0) and (cur_mid < E.t_end)]
-dispatch of [E.root, {"type": "mousemove", "x": rx_hi, "y": tv.ry + 2}]
+ui_dispatch of [E.root, {"type": "mousemove", "x": rx_hi, "y": tv.ry + 2}]
 check of ["dragging the ruler keeps scrubbing", E.scrub_fires, 2]
 check_true of ["the drag moved the cursor forward", E.tl.cursor > cur_mid]
-dispatch of [E.root, {"type": "mouseup", "button": 1, "x": rx_hi, "y": tv.ry + 2}]
+ui_dispatch of [E.root, {"type": "mouseup", "button": 1, "x": rx_hi, "y": tv.ry + 2}]
 
 panel_matches is 1
 rc is explorer_state_at of (floor of E.tl.cursor)
